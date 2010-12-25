@@ -1,7 +1,10 @@
 package Finance::FITF::Writer;
 use strict;
 use warnings;
-use Class::Accessor "antlers";
+BEGIN {
+    eval "use Class::XSAccessor::Compat 'antlers'; 1" or
+    eval "use Class::Accessor::Fast 'antlers'; 1" or die $@;
+}
 use DateTime;
 use Carp qw(croak);
 
@@ -132,7 +135,8 @@ Finance::FITF::Writer - Fast Intraday Transaction Format Writer
 =head1 SYNOPSIS
 
   use Finance::FITF;
-  Finance::FITF::Writer->new(
+  my $fh;
+  my $writer = Finance::FITF::Writer->new(
     fh => $fh,
     header => {
         name => 'XTAF.TX',

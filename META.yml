@@ -18,6 +18,8 @@ no_index:
     - inc
     - t
     - xt
+recommends:
+  Class::XSAccessor::Compat: 0
 requires:
   Class::Accessor: 0.34
   DateTime: 0
@@ -28,4 +30,4 @@ requires:
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/clkao/Finance-FITF.git
-version: 0.29
+version: 0.30

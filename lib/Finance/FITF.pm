@@ -2,9 +2,13 @@ package Finance::FITF;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.29';
+our $VERSION = '0.30';
 use Finance::FITF::Writer;
-use Class::Accessor "antlers";
+use POSIX qw(ceil);
+BEGIN {
+    eval "use Class::XSAccessor::Compat 'antlers'; 1" or
+    eval "use Class::Accessor::Fast 'antlers'; 1" or die $@;
+}
 
 use Sub::Exporter -setup => {
     groups  => {
@@ -91,6 +95,7 @@ has bar_sz     => ( is => "rw", isa => "Int");
 has tick_fmt   => ( is => "ro", isa => "Parse::Binary::FixedFormat" );
 has tick_sz    => ( is => "rw", isa => "Int");
 
+has day        => (is => "rw", isa => "DateTime");
 has date_start => (is => "rw", isa => "Int");
 
 has nbars => (is => "rw", isa => "Int");
@@ -103,11 +108,11 @@ sub new {
     $self->bar_sz(    length( $self->bar_fmt->format({}) ) );
     $self->tick_sz(   length( $self->tick_fmt->format({}) ) );
     my ($y, $m, $d) = $self->header->{date} =~ m/(\d\d\d\d)(\d\d)(\d\d)/;
-    $self->date_start( DateTime->new(time_zone => $self->header->{time_zone},
-                                     year => $y, month => $m, day => $d)->epoch );
+    $self->day(DateTime->new(time_zone => $self->header->{time_zone},
+                             year => $y, month => $m, day => $d));
+    $self->date_start( $self->day->epoch );
 
     $self->{bar_ts} ||= [];
-    my $date_start = $self->date_start;
 
     for (0..2) {
         my ($start, $end) = ($self->header->{start}[$_], $self->header->{end}[$_]);
@@ -186,6 +191,14 @@ sub run_ticks {
                           });
 }
 
+sub run_bars {
+    my ($self, $start, $end, $cb) = @_;
+    my $cnt = $end - $start + 1;
+    seek $self->{fh}, $start * $self->bar_sz + $self->header_sz, 0;
+
+    $self->_fast_unformat($self->bar_fmt, $self->bar_sz, $cnt, $cb);
+}
+
 sub _fast_unformat {
     my ($self, $fmt, $sz, $n, $cb) = @_;
 
@@ -198,6 +211,77 @@ sub _fast_unformat {
         @{$record}{@{$fmt->{Names}}} = @r;
         $cb->($record);
     }
+}
+
+sub run_bars_as {
+    my ($self, $bar_seconds, $offset, $cb) = @_;
+    my @ts;
+    my $h = $self->header;
+    for (0..2) {
+        my ($start, $end) = ($self->header->{start}[$_], $self->header->{end}[$_]);
+        last unless $start && $end;
+
+        push @ts,
+            map { my $t = $start + $_ * $bar_seconds;
+                  $t < $end ? $t : $end;
+              } (1..ceil(($end - $start) / $bar_seconds));
+    }
+
+    my $i = 0;
+    my @fast = @{$self->{bar_ts}};
+    my $current_bar;
+    my $last_price;
+    $self->run_bars(0, $self->nbars-1,
+                    sub {
+                        my $bar = shift;
+                        my $ts = $self->{bar_ts}[$i++];
+                        if ($bar->{volume}) {
+                            if ($current_bar) {
+                                $current_bar->{high} = $bar->{high}
+                                    if $bar->{high} > $current_bar->{high};
+                                $current_bar->{low} = $bar->{low}
+                                    if $bar->{low} < $current_bar->{low};
+
+                                $current_bar->{close} = $bar->{close};
+                                $current_bar->{volume} += $bar->{volume};
+                                $current_bar->{ticks} += $bar->{ticks};
+                            }
+                            else {
+                                $current_bar = $bar;
+                            }
+                        }
+                        if ($ts == $ts[0]) {
+                            $current_bar ||= { open => $last_price,
+                                               high => $last_price,
+                                               low  => $last_price,
+                                               close => $last_price,
+                                               volume => 0,
+                                               ticks => 0,
+                                           };
+                            $cb->(shift @ts, $current_bar);
+                            $last_price = $current_bar->{close};
+                            undef $current_bar;
+                        }
+                    });
+    if (@ts) {
+        $cb->(shift @ts, $current_bar);
+    }
+}
+
+sub format_timestamp {
+    my ($self, $ts) = @_;
+    my $hms = $ts - $self->{date_start};
+    my $d = $self->day;
+
+    if ($hms < 0) {
+        $d = $d->clone->subtract(days => 1);
+        $hms += 86400;
+    }
+    $hms = sprintf('%02d:%02d:%02d',
+                   int($hms / 60 / 60),
+                   int(($hms % 3600)/60),
+                   ($hms % 60));
+    return $self->day->ymd. ' '.$hms;
 }
 
 sub new_writer {
@@ -363,6 +447,21 @@ Returns the index of the bar located C<$ts>.
 
 Iterate the ticks indexed by C<$start> and C<$end> for the callback
 C<$cb>.  the callback takes timestamp, price, and volume as argument.
+
+=item $self->run_bars($start, $end, $cb)
+
+Iterate the bars indexed by C<$start> and C<$end> for the callback
+C<$cb>.  the callback takes the bar hash.
+
+=item $self->run_bars_as($bar_seconds, $offset, $cb)
+
+Aggregate bars into C<$bar_seconds>-bars for the callback C<$cb>.  The
+callback takes timestamp of the bar and the bar hash.
+
+=item $self->format_timestamp($ts)
+
+A faster helper to format timestamp as C<"%F %T"> in the
+C<$self->header->{time_zone}>.
 
 =back
 
