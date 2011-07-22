@@ -2,7 +2,7 @@ package Finance::FITF;
 
 use strict;
 use 5.008_001;
-our $VERSION = '0.30';
+our $VERSION = '0.31';
 use Finance::FITF::Writer;
 use POSIX qw(ceil);
 BEGIN {
@@ -215,12 +215,14 @@ sub _fast_unformat {
 
 sub run_bars_as {
     my ($self, $bar_seconds, $offset, $cb) = @_;
+    Carp::confess unless $bar_seconds;
     my @ts;
     my $h = $self->header;
     for (0..2) {
         my ($start, $end) = ($self->header->{start}[$_], $self->header->{end}[$_]);
         last unless $start && $end;
 
+        $start -= $offset;
         push @ts,
             map { my $t = $start + $_ * $bar_seconds;
                   $t < $end ? $t : $end;
@@ -228,7 +230,6 @@ sub run_bars_as {
     }
 
     my $i = 0;
-    my @fast = @{$self->{bar_ts}};
     my $current_bar;
     my $last_price;
     $self->run_bars(0, $self->nbars-1,
@@ -277,11 +278,15 @@ sub format_timestamp {
         $d = $d->clone->subtract(days => 1);
         $hms += 86400;
     }
+    elsif ($hms >= 86400) {
+        $d = $d->clone->add(days => 1);
+        $hms -= 86400;
+    }
     $hms = sprintf('%02d:%02d:%02d',
                    int($hms / 60 / 60),
                    int(($hms % 3600)/60),
                    ($hms % 60));
-    return $self->day->ymd. ' '.$hms;
+    return $d->ymd. ' '.$hms;
 }
 
 sub new_writer {
@@ -323,10 +328,10 @@ Finance::FITF - Fast Intraday Transaction Format
   use Finance::FITF;
 
   my $day = Finance::FITF->new_from_file('XTAF.TX-2010-11-19.fitf');
-  $day->header->{start}[0]; # start of the first session
-  $day->header->{end}[0];   # end of the first session
+  warn $day->header->{start}[0]; # start of the first session
+  warn $day->header->{end}[0];   # end of the first session
 
-  $day->header->{bar_seconds}; # number of seconds per bar
+  warn $day->header->{bar_seconds}; # number of seconds per bar
 
   # last bar in the file. you can get open/high/low/close/volume from $bar
   my $bar = $day->bar_at($day->header->{end}[0]);
